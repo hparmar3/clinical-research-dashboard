@@ -1,0 +1,1103 @@
+---
+title: Guide Effort Tool
+output: flexdashboard::flex_dashboard
+runtime: shiny
+self_contained: true
+---
+```{r notes, include= FALSE}
+### SECTIONS:
+# import_surveys: This section prepares the environment the Shiny data tool by loading the required packages, importing a local Excel log, and retrieving clinical study data from REDCap via API. It sets up a function to export REDCap data and then uses it to download data sets for specific studies.
+
+# clean_imported_surveys: This section cleans and standardizes data from the REDCap studies and the guide_log by formatting dates, assigning study phases, filtering incomplete records, and harmonizing variables. The cleaned datasets are then exported as CSV files for further use. 
+
+# combine_studies: This section defined and applies a function to extract and label relevant guide-related data from multiple studies, combines the results into a single dataset, and standardizes columns names and formatting for consistency and analysis.
+
+# guide_effort_table: This code maps event names to visit numbers, aggregates and formats clinical guide data by participant and study, estimates key study dates, merges with the guide log, and standardizes guide names by grouping and harmonizing similar entries.
+
+# guide_summary: This code creates two summary tables of clinical and secondary guides: one (guide_summary_part1) that aggregates visit types and total hours worked per guide, and another (guide_summary_part2) that summarizes participant progress and completion rates per guide. Both parts reshape the data to treat Clinical and Secondary Guides uniformly and standardize guide names.
+
+# display: This creates the Shiny app that provides an interactive dashboard to filter, visualize, and summarize clinical guide participation data from studies, with side panels for filtering options and summary statistics, and a center panel for displaying data tables. It includes customized UI styling and reactive server logic to dynamically update content based on user input. 
+
+### NOTES:
+# ***"CODE DEPENDENT ON STUDIES": if you search (command/control f) through the R markdown file for this exact wording, you will be able to find the parts that need to be modified when new studies are added
+```
+
+```{r import_surveys, include = FALSE}
+rm(list=ls())
+
+### LOAD REQUIRED PACKAGES
+required.packages <- c("htmlwidgets","shiny","DT","tidyverse", "redcapAPI", "readxl", "shinydashboard", "httr")
+new.packages <- required.packages[!(required.packages %in% installed.packages()[,"Package"])] #checks for new packages from required.packages
+if(length(new.packages)) install.packages(new.packages) # installs any packages don't yet have
+lapply(required.packages, require, character.only = TRUE) #load specified packages
+
+
+### READ IN OLD GUIDE TRACKING FILE
+guide_log <- read_excel('~/Desktop/Guide Effort Tool 2/Study Guide Log.xlsx', col_names = TRUE)
+guide_log <- guide_log[, !names(guide_log) %in% c("...7", "...8", "...9")]
+
+
+### READ IN REDCAP API EXPORT FUNCTION (this contains source for redcap config file)
+source('/Users/hennaparmar/Desktop/Guide Effort Tool 2/repcap_api_export.R')
+
+### EXPORT REDCAP DATA FROM TRIALS
+### CODE DEPENDENT ON STUDIES
+study_1 <- redcap_to_csv(redcap_url, token_study_1)
+study_2 <- redcap_to_csv(redcap_url, token_study_2)
+study_3 <- redcap_to_csv(redcap_url, token_study_3)
+study_4 <- redcap_to_csv(redcap_url, token_study_4)
+```
+
+```{r clean_imported_surveys, include = FALSE}
+### CLEAN DATA 
+### MOST FREQUENT FUNCTION
+get_mode <- function(x) {
+  ux <- na.omit(unique(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+###CODE DEPENDENT ON STUDIES
+### =====STUDY_1 STUDY=====
+study_1_clean <- study_1 %>%
+  mutate(
+    fvf_visitdate = as.Date(fvf_visitdate), # Convert visit date to Date format
+    date = ymd(fvf_visitdate),  # Convert to date format
+    study_name = "STUDY_1",      # Add study name
+    vol_id = as.numeric(vol_id), # Fixes vol_id numbers
+    study_phase = case_when(    # Assign study phase based on redcap_event_name
+      grepl("screen|baseline|prep", redcap_event_name, ignore.case = TRUE) ~ "Prep",
+      grepl("session", redcap_event_name, ignore.case = TRUE) ~ "Dosing",
+      grepl("int", redcap_event_name, ignore.case = TRUE) ~ "Integration",
+      grepl("month", redcap_event_name, ignore.case = TRUE) ~ "Follow-Up",
+      TRUE ~ "Other"
+    ),
+    fvf_duration = as.integer(fvf_duration), # Ensure duration is an integer
+    fvf_facilitator1 = na_if(fvf_facilitator1, ""), # Convert blank facilitators to NA
+    fvf_facilitator2 = na_if(fvf_facilitator2, "")
+  ) %>%
+  arrange(vol_id, date) %>%  # Arrange data by vol_id and date
+  select(
+    study_name, vol_id, fvf_facilitator1, fvf_facilitator2, fvf_visitdate,
+    study_phase, redcap_event_name, visit, fvf_duration
+  ) %>%
+  # Fixes errors when Clinical or Secondary Guide is blank for most but has entry for one
+  group_by(vol_id) %>%
+  mutate(
+    fvf_facilitator1 = if_else(
+      is.na(fvf_facilitator1),
+      get_mode(fvf_facilitator1),
+      fvf_facilitator1
+    ),
+    fvf_facilitator2 = if_else(
+      is.na(fvf_facilitator2),
+      get_mode(fvf_facilitator2),
+      fvf_facilitator2
+    )
+  ) %>%
+  ungroup()
+
+
+### =====STUDY_2 Study=====
+study_2_clean <- study_2 %>%
+  mutate(
+    fvf_visitdate = as.Date(fvf_visitdate), # Convert visit date to Date format
+    date = ymd(fvf_visitdate),  # Convert to date format
+    study_name = "STUDY_2",      # Add study name
+    vol_id = as.numeric(vol_id),
+    study_phase = case_when(    # Assign study phase based on redcap_event_name
+      grepl("screen|baseline|prep", redcap_event_name, ignore.case = TRUE) ~ "Prep",
+      grepl("session", redcap_event_name, ignore.case = TRUE) ~ "Dosing",
+      grepl("int", redcap_event_name, ignore.case = TRUE) ~ "Integration",
+      grepl("month", redcap_event_name, ignore.case = TRUE) ~ "Follow-Up",
+      TRUE ~ "Other"
+    ),
+    fvf_duration = as.integer(fvf_duration), # Ensure duration is an integer
+    fvf_facilitator1 = na_if(fvf_facilitator1, ""), # Convert blank facilitators to NA
+    fvf_facilitator2 = na_if(fvf_facilitator2, ""),
+  ) %>%
+  arrange(vol_id, date) %>%  # Arrange data by vol_id and date
+  select(
+    study_name, vol_id, fvf_facilitator1, fvf_facilitator2, fvf_visitdate,
+    study_phase, redcap_event_name, visit, fvf_duration
+  ) %>%
+  # Fixes errors when Clinical or Secondary Guide is blank for most but has entry for one
+  group_by(vol_id) %>%
+  mutate(
+    fvf_facilitator1 = if_else(
+      is.na(fvf_facilitator1),
+      get_mode(fvf_facilitator1),
+      fvf_facilitator1
+    ),
+    fvf_facilitator2 = if_else(
+      is.na(fvf_facilitator2),
+      get_mode(fvf_facilitator2),
+      fvf_facilitator2
+    )
+  ) %>%
+  ungroup()
+
+
+### =====STUDY_4 STUDY=====
+study_4_clean <- study_4 %>%
+  mutate(
+    fvf_visitdate = as.Date(fvf_visitdate), # Convert visit date to Date format
+    date = ymd(fvf_visitdate),  # Convert to date format
+    study_name = "STUDY_4",      # Add study name
+    vol_id = as.numeric(sub(".*-", "", vol_id)), # Fixes vol_id numbers
+    study_phase = case_when(    # Assign study phase based on redcap_event_name
+      grepl("screen|baseline|prep", redcap_event_name, ignore.case = TRUE) ~ "Prep",
+      grepl("session", redcap_event_name, ignore.case = TRUE) ~ "Dosing",
+      grepl("int", redcap_event_name, ignore.case = TRUE) ~ "Integration",
+      grepl("month", redcap_event_name, ignore.case = TRUE) ~ "Follow-Up",
+      TRUE ~ "Other"
+    ),
+    fvf_duration = as.integer(fvf_duration), # Ensure duration is an integer
+    fvf_facilitator1 = na_if(fvf_facilitator1, ""), # Convert blank facilitators to NA
+    fvf_facilitator2 = na_if(fvf_facilitator2, "")
+  ) %>%
+  arrange(vol_id, date) %>%  # Arrange data by vol_id and date
+  select(
+    study_name, vol_id, fvf_facilitator1, fvf_facilitator2, fvf_visitdate,
+    study_phase, redcap_event_name, visit, fvf_duration
+  ) %>%
+  # Fixes errors when Clinical or Secondary Guide is blank for most but has entry for one
+  group_by(vol_id) %>%
+  mutate(
+    fvf_facilitator1 = if_else(
+      is.na(fvf_facilitator1),
+      get_mode(fvf_facilitator1),
+      fvf_facilitator1
+    ),
+    fvf_facilitator2 = if_else(
+      is.na(fvf_facilitator2),
+      get_mode(fvf_facilitator2),
+      fvf_facilitator2
+    )
+  ) %>%
+  ungroup()
+
+### =====STUDY_3 STUDY=====
+study_3$visit <- study_3$studyvisit_2004 
+
+study_3_clean <- study_3 %>%
+  mutate(
+    fvf_visitdate = as.Date(fvf_visitdate), # Convert visit date to Date format
+    date = ymd(fvf_visitdate),  # Convert to date format
+    study_name = "STUDY_3",      # Add study name
+    vol_id = as.numeric(sub(".*-", "", vol_id)),
+    study_phase = case_when(    # Assign study phase based on redcap_event_name
+      grepl("screen|baseline|prep", redcap_event_name, ignore.case = TRUE) ~ "Prep",
+      grepl("session", redcap_event_name, ignore.case = TRUE) ~ "Dosing",
+      grepl("int", redcap_event_name, ignore.case = TRUE) ~ "Integration",
+      grepl("month", redcap_event_name, ignore.case = TRUE) ~ "Follow-Up",
+      TRUE ~ "Other"
+    ),
+    fvf_duration = as.integer(fvf_duration), # Ensure duration is an integer
+    fvf_facilitator1 = na_if(fvf_facilitator1, ""), # Convert blank facilitators to NA
+    fvf_facilitator2 = na_if(fvf_facilitator2, "")
+  ) %>%
+  arrange(vol_id, date) %>%  # Arrange data by vol_id and date
+  select(
+    study_name, vol_id, fvf_facilitator1, fvf_facilitator2, fvf_visitdate,
+    study_phase, redcap_event_name, visit, fvf_duration
+  ) %>%
+  # Fixes errors when Clinical or Secondary Guide is blank for most but has entry for one
+  group_by(vol_id) %>%
+  mutate(
+    fvf_facilitator1 = if_else(
+      is.na(fvf_facilitator1),
+      get_mode(fvf_facilitator1),
+      fvf_facilitator1
+    ),
+    fvf_facilitator2 = if_else(
+      is.na(fvf_facilitator2),
+      get_mode(fvf_facilitator2),
+      fvf_facilitator2
+    )
+  ) %>%
+  ungroup()
+
+### =====GUIDE LOG=====
+# FUNCTION TO CLEAN AND STANDARDIZE DATE VALUE IN GUIDE LOG
+clean_dates <- function(date_column) {
+  # Convert to character
+  date_column <- as.character(date_column)
+  
+  # Trim whitespace
+  date_column <- trimws(date_column)
+  
+  # Replace text-based values with NA
+  date_column <- ifelse(
+    str_detect(date_column, "missing|approx|ghosted|dropped|Withdrew|TBD|\\?|not listed"), 
+    NA, 
+    date_column
+  )
+
+  # Convert Excel serial numbers
+  is_numeric <- suppressWarnings(!is.na(as.numeric(date_column)))
+  date_column[is_numeric] <- as.character(as.Date(as.numeric(date_column[is_numeric]), origin = "1899-12-30"))
+
+  # Parse dates using lubridate
+  parsed_dates <- suppressWarnings(parse_date_time(date_column, orders = c("mdy", "dmy", "ymd", "Ymd", "mdY"), tz = "UTC"))
+
+  return(parsed_dates)
+}
+
+# CLEAN DATES IN GUIDE LOG
+guide_log <- guide_log %>%
+  mutate(
+    `Start Date (first prep)` = clean_dates(`Start Date (first prep)`),
+    `End Date (last integration before follow-up)` = clean_dates(`End Date (last integration before follow-up)`)
+  )
+
+# FIXES OTHER SMALL INCONSISTENIES TO MATCH VIEW 1
+guide_log <- guide_log %>%
+  rename_with(~trimws(.)) %>%  # Trim whitespace in column names
+  mutate(across(everything(), as.character)) %>%  # Convert all columns to characters
+  mutate(
+    `Clinical Guide` = toupper(`Clinical Guide`),
+    `Secondary Guide` = toupper(`Secondary Guide`),
+  ) %>%
+  mutate(
+    `Start Date (first prep)` = as.Date(`Start Date (first prep)`, format = "%Y-%m-%d"),
+    `End Date (last integration before follow-up)` = as.Date(`End Date (last integration before follow-up)`, format = "%Y-%m-%d")
+  ) %>%
+  rename(
+    `Study` = `Study (STUDY_3)`,
+    `Start Date (First Prep)` = `Start Date (first prep)`
+  )
+
+
+write.csv(study_2_clean, 'study_2_facilitatordata.csv', row.names = F)
+write.csv(study_1_clean, 'study_1_facilitatordata.csv', row.names = F)
+write.csv(study_4_clean, 'study_4_facilitatordata.csv', row.names = F)
+write.csv(study_3_clean, 'study_3_facilitatordata.csv', row.names = F)
+```
+
+```{r combine_studies, include = FALSE}
+### FUNCTION TO QUERY GUIDE DATA FROM FACILITATOR VISIT FORM
+guideeffort_bystudy <- function(data, study_name){
+  guide_data <- data %>%
+    dplyr::select(c('vol_id', 'study_phase', 'redcap_event_name', visit, starts_with('fvf_'))) %>%
+    rowwise() %>%
+    filter(!all(across(starts_with("fvf_"), is.na))) %>%
+    ungroup()
+  
+  study_name <- rep(study_name, nrow(guide_data))
+  
+  guide_data <- cbind(study_name, guide_data)
+  return(guide_data)
+}
+
+### APPLY FUNCTION TO EACH DATA SET // CODE DEPENDENT ON STUDIES
+study_1_guide_data <- guideeffort_bystudy(study_1_clean, study_name = 'STUDY_1')
+study_2_guide_data <- guideeffort_bystudy(study_2_clean, study_name = 'STUDY_2')
+study_4_guide_data <- guideeffort_bystudy(study_4_clean, study_name = 'STUDY_4')
+study_3_guide_data <- guideeffort_bystudy(study_3_clean, study_name = 'STUDY_3')
+
+
+### CREATE COMBINED DATA FRAME WITH GUIDE DATA FROM ALL STUDIES // CODE DEPENDENT ON STUDIES
+all_guide_data <- bind_rows(study_1_guide_data, study_2_guide_data, study_4_guide_data, study_3_guide_data)
+
+### RENAME COLUMNS
+all_guide_data <- all_guide_data %>%
+  rename(
+    'Study' = study_name,
+    'Participant ID' = vol_id,
+    'Clinical Guide' = fvf_facilitator1,
+    'Secondary Guide' = fvf_facilitator2,
+    'Date' = fvf_visitdate,
+    'Study Phase' = study_phase,
+    'Visit Name' = redcap_event_name,
+    'Duration in Min' = fvf_duration
+  ) %>%
+  mutate(
+    'Clinical Guide' = toupper(`Clinical Guide`),
+    'Secondary Guide' = toupper(`Secondary Guide`),
+    'Visit Progress' = visit
+  ) 
+```
+
+```{r guide_effort_table, include = FALSE}
+### DEFINE A NAME VECTOR TO MAP redcap_event_name TO VISIT NUMBERS \\ CODE DEPENDENT ON STUDIES
+event_to_visit <- c(
+  "visit_1_screening_arm_1" = 1,
+  "visit_2_screening_arm_1" = 2,
+  "visit_3_prep_1_arm_1" = 3, 
+  "visit_4_prep_2_arm_1" = 4,
+  "visit_5_prep_3_arm_1" = 5,
+  "visit_6_final_prep_arm_1" = 6, 
+  "visit_7_session_1_arm_1" = 7,
+  "visit_8_integratio_arm_1" = 8,
+  "visit_9_1_wk_posts_arm_1" = 9,
+  "visit_92_2_wk_post_arm_1" = 9,
+  "visit_93_3_wk_post_arm_1" = 9,
+  "visit_10_1_mo_post_arm_1" = 10,
+  "visit_102_call_1_s_arm_1" = 10,
+  "visit_103_call_2_s_arm_1" = 10,
+  "visit_104_call_3_s_arm_1" = 10,
+  "visit_11_3_mo_post_arm_1" = 11,
+  "visit_12_session_2_arm_1" = 12,
+  "visit_13_integrati_arm_1" = 13,
+  "visit_14_1_wk_post_arm_1" = 14, 
+  "visit_142_2_wk_pos_arm_1" = 14,
+  "visit_143_3_wk_pos_arm_1" = 14,
+  "visit_15_1_mo_post_arm_1" = 15,
+  "visit_152_call_1_s_arm_1" = 15,
+  "visit_153_call_2_s_arm_1" = 15,
+  "visit_154_call_3_s_arm_1" = 15,
+  "visit_16_3_mo_post_arm_1" = 16,
+  "visit_17_ltfu_1_arm_1" = 17,
+  "visit_18_ltfu_2_arm_1" = 18,
+  "visit_15_rescreen_arm_1" = 1,
+  "visit_55_additiona_arm_1" = 5
+)
+
+### FUNCTION TO CONCATENATE UNIQUE VALUES
+unique_names <- function(x) {
+  paste(unique(x), collapse = "/")
+}
+
+### SELECT RELEVANT COLUMNS AND GROUP DATA (VIEW 1)
+set.seed(123)
+guide_effort_table <- all_guide_data[c("Study", 
+                          "Participant ID", 
+                          "Clinical Guide", 
+                          "Secondary Guide", 
+                          "Visit Name",
+                          "Visit Progress",
+                          "Study Phase",
+                          "Date", 
+                          "Duration in Min"
+                        )]
+
+
+### AGGREGATE AND SUMMARIZE VIEW1 DATA BY PARTICIPANT ID AND STUDY
+guide_effort_table <- guide_effort_table %>%
+  # Set Visit Progress to NA if it's 999
+  mutate(
+    `Visit Progress` = ifelse(`Visit Progress` == 999, NA, `Visit Progress`)
+  ) %>%
+  
+  # CODE DEPENDENT ON STUDIES
+  mutate(
+    `Visit Progress` = ifelse(
+      Study == "STUDY_3" & (is.na(`Visit Progress`) | is.infinite(`Visit Progress`)), unname(event_to_visit[`Visit Name`]),
+      `Visit Progress`
+    )
+  ) %>%
+  group_by(`Participant ID`, `Study`) %>%
+  summarise(
+    # Get the earliest date (first prep session)
+    `Start Date (First Prep)` = min(`Date`, na.rm = TRUE),
+    
+    # Combine unique Clinical Guides names into a single string
+    `Clinical Guide` = unique_names(`Clinical Guide`),
+    
+    # Combine unique Secondary Guide names into a single string
+    `Secondary Guide` = unique_names(`Secondary Guide`),
+    
+    # Get the maximum visit progress for each participant
+    `Visit Progress` = max(`Visit Progress`, na.rm = TRUE),
+    
+    # Assign the study phase corresponding to the most recent visit date
+    `Study Phase` = `Study Phase`[which.max(`Date`)]
+            ) %>%
+  ungroup() %>%
+  
+  # Format Visit Progress based on the study type // CODE DEPENDENT ON STUDIES
+    mutate(
+      `Visit Progress` = case_when(
+      `Study` == "STUDY_1" ~ paste((`Visit Progress` + 1), "/16", sep = ""),
+      `Study` == "STUDY_2" ~ paste((`Visit Progress` + 1), "/20", sep = ""),
+      `Study` == "STUDY_3" ~ paste(`Visit Progress`, "/28", sep = ""),
+      `Study` == "STUDY_4" ~ paste(`Visit Progress`, "/10", sep = ""),
+      TRUE ~ as.character(`Visit Progress`)
+    )
+  )
+
+# Calculate expected end dates based on study type // CODE DEPENDENT ON STUDIES
+guide_effort_table <- guide_effort_table %>%
+  mutate(
+    'End Date (last integration before follow-up)' = case_when(
+      `Study` == 'STUDY_2' ~ as.Date(`Start Date (First Prep)`) + 12*7,
+      `Study` == 'STUDY_1' ~ as.Date(`Start Date (First Prep)`) + 8*7,
+      TRUE ~ NA_Date_
+    ),
+    'End Date (LTFU)' = case_when(
+      `Study` == 'STUDY_2' ~ as.Date(`Start Date (First Prep)`) + 65*7,
+      `Study` == 'STUDY_1' ~ as.Date(`Start Date (First Prep)`) + 52*7,
+      TRUE ~ NA_Date_
+    )
+  )
+
+### MERGES VIEW 1 AND GUIDE LOG
+guide_effort_table <- merge(guide_log, guide_effort_table, by = c( "Study", "Participant ID", "Clinical Guide", "Secondary Guide", "Start Date (First Prep)", "End Date (last integration before follow-up)"), all = TRUE)
+
+### CONVERT `Participant ID` TO NUMERIC FOR EASIER FILTERING
+guide_effort_table$`Participant ID` <- as.numeric(guide_effort_table$`Participant ID`)
+
+
+### FUNCTION TO GET THE MOST FREQUENT VALUE
+most_frequent <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+### FUNCTION TO STANDARDIZE NAMES
+library(stringdist)
+
+standardize_name <- function(name_vector) {
+  name_vector <- as.character(name_vector)
+  name_vector[is.na(name_vector)] <- ""
+  name_vector <- trimws(name_vector)
+  
+  # Clean special characters
+  name_vector <- gsub("[^a-zA-Z/,\\- ]", "", name_vector, perl = TRUE)
+  name_vector <- gsub("\\s+", " ", name_vector)
+  name_vector <- gsub("-", " ", name_vector)  # Replace hyphens with spaces
+  name_vector <- gsub("\\bNOT PRESENT\\b", "", name_vector, ignore.case = TRUE)
+  name_vector <- gsub(",\\s*MD\\b", "", name_vector)
+  
+  # Normalize slashes and remove duplicates per entry
+  name_vector <- sapply(name_vector, function(name) {
+    guides <- unique(trimws(unlist(strsplit(name, "/"))))
+    paste(guides, collapse = "/")
+  })
+
+  # Get all unique individual guide names
+  all_guides <- unique(trimws(unlist(strsplit(name_vector, "/"))))
+  all_guides <- all_guides[all_guides != ""]
+  
+
+  # Tokenize each guide name into lowercase words
+  guide_tokens <- lapply(all_guides, function(name) {
+    tokens <- unlist(strsplit(tolower(name), " "))
+    tokens[tokens != ""]
+  })
+  
+  # Group similar names (≥2 token overlap)
+  grouped_names <- list()
+  used <- rep(FALSE, length(all_guides))
+  
+  for (i in seq_along(all_guides)) {
+    if (used[i]) next
+    group <- i
+    for (j in seq_along(all_guides)) {
+      if (i != j && !used[j]) {
+        shared <- intersect(guide_tokens[[i]], guide_tokens[[j]])
+        if (length(shared) >= 2) {
+          group <- c(group, j)
+        }
+      }
+    }
+    grouped_names[[length(grouped_names) + 1]] <- all_guides[unique(group)]
+  }
+
+  # Map each name to the longest name in its group
+  guide_map <- list()
+  for (group in grouped_names) {
+    canonical <- group[which.max(nchar(group))][1]
+    for (name in group) {
+      guide_map[[name]] <- canonical
+    }
+  }
+
+  # Apply mapping
+  name_vector <- sapply(name_vector, function(x) {
+    parts <- trimws(unlist(strsplit(x, "/")))
+    cleaned_parts <- sapply(parts, function(p) {
+      p <- trimws(p)
+      val <- guide_map[[p]]
+      if (is.null(val)) p else val
+    }, USE.NAMES = FALSE)
+    cleaned_parts <- as.character(cleaned_parts)
+    paste(sort(unique(cleaned_parts)), collapse = "/")
+  }, USE.NAMES = FALSE)
+  
+  # Correct slight variations using approximate matching
+  unique_names <- unique(unlist(strsplit(name_vector, "/")))  # Get all individual guides
+  if (length(unique_names) > 1) {
+    for (i in seq_along(unique_names)) {
+      for (j in seq_along(unique_names)) {
+        if (i != j && stringdist::stringdist(unique_names[i], unique_names[j]) <= 2) {
+          name_vector <- gsub(paste0("\\b", unique_names[j], "\\b"), unique_names[i], name_vector)
+        }
+      }
+    }
+  }
+  
+  name_vector <- sapply(name_vector, function(name) {
+    parts <- trimws(unlist(strsplit(name, "/")))
+    parts <- sapply(parts, function(p) {
+      if (p %in% names(manual_map)) manual_map[[p]] else p 
+    })
+    paste(parts, collapse = "/")
+  }) 
+
+  return(name_vector)
+}
+
+
+### APPLY STANDARDIZE NAME FUNCTION TO GUIDE EFFORT TABLE AT THE SAME TIME
+# Step 1: Pull all unique names from both columns
+all_names <- unique(c(guide_effort_table$`Clinical Guide`, guide_effort_table$`Secondary Guide`))
+
+# Step 2: Create a mapping of original to standardized names
+name_mapping <- setNames(standardize_name(all_names), all_names)
+
+# Step 3: Apply the mapping back to both columns
+guide_effort_table <- guide_effort_table %>%
+  mutate(
+    `Clinical Guide` = name_mapping[`Clinical Guide`],
+    `Secondary Guide` = name_mapping[`Secondary Guide`]
+  ) %>%
+  filter(
+    !(tolower(`Clinical Guide`) == "test" | tolower(`Secondary Guide`) == "test"),
+    !is.na(`Participant ID`),
+    `Participant ID` != ""
+  )
+```
+
+```{r guide_summary, include = FALSE}
+### GUIDE SUMMARY TABLE
+### VIEW 2
+# Merge guide_lug and all_guide_data by common columns
+pre_guide_summary <- merge(guide_log, all_guide_data, by = c( "Study", "Participant ID", "Clinical Guide", "Secondary Guide"), all = TRUE)
+
+# Reshape the data: pivot long to combine Clinical Guide and Secondary Guide into a single column
+guide_summary_part1 <- pre_guide_summary %>%
+  pivot_longer(cols = c(`Clinical Guide`, `Secondary Guide`), # Pivot these two columns into key-value pairs
+               names_to = "Guide_Type", # New column to indicate whether it's a Clinical or Secondary Guide
+               values_to = "Guide" # Column for the guide name
+               ) %>%
+  filter(
+        !is.na(Guide),
+        !(tolower(`Guide`) == "test"),
+        !is.na(`Participant ID`),
+        `Participant ID` != ""
+      ) %>% # Filter out rows where the guide is missing
+  separate_rows(Guide, sep = "/") %>% # split guide names into rows
+  mutate(
+    `Guide` = standardize_name(`Guide`)
+  ) %>%
+  group_by(`Guide`) %>% # Group the data by each unique guide
+  summarise(
+    # Count the number of sessions per guide
+    `Number of Sessions` = sum(grepl("sess|session", `Visit Name`, ignore.case = TRUE) & !grepl("pre|post", `Visit Name`, ignore.case = TRUE)),
+    
+    # Count the number of `prep` visits for each guide (case-insensitive check)
+    `Number of Prep Visits` = sum(grepl("prep", `Visit Name`, ignore.case = TRUE)), # Check if 'Visit Name' contains prep
+    
+    # Count the number of follow-up visits for each guide // CODE DEPENDENT ON STUDIES
+    `Number of Follow-up Visits` = sum(grepl("fu|month|post|int|week|wk|mo|ltfu", `Visit Name`, ignore.case = TRUE)),
+    
+    # Calculate the total hours (convert to minutes to hours)
+    `Hours Total` = sum(as.numeric(`Duration in Min`), na.rm = TRUE) / 60,
+    
+  )
+
+### VIEW 3
+#Convert `Visit Progress` to numeric
+guide_summary_part2 <- guide_effort_table
+
+guide_summary_part2$`Visit Progress` <- sapply(strsplit(guide_summary_part2$`Visit Progress`, "/"), function(x) as.numeric(x[1]) / as.numeric(x[2]))
+
+# Pivot the guide_effort_table similarly as in View 2
+guide_summary_part2 <- guide_summary_part2 %>%
+  pivot_longer(cols = c(`Clinical Guide`, `Secondary Guide`), # Pivot these two columns into key-value pairs
+               names_to = "Guide_Type", # New column to indicate whether it's a Clinical or Secondary Guide
+               values_to = "Guide" # Column for the guide name
+               ) %>%
+  filter(
+        !is.na(Guide),
+        !(tolower(`Guide`) == "test"),
+        !is.na(`Participant ID`),
+        `Participant ID` != ""
+      ) %>% # Filter out rows where the guide is missing
+  separate_rows(Guide, sep = "/") %>% # split guide names into rows
+  mutate(
+    `Guide` = standardize_name(`Guide`)
+  ) %>%
+  group_by(`Guide`) %>% # Group the data by each unique guide
+  summarise(
+    # Count the total number of participants for each guide (distinct Participant ID and Study)
+    `Total Participants` = n_distinct(`Participant ID`, `Study`),
+    
+    # Count how many participants have a Visit Progress of 1 (indicating they have completed the visit)
+    `Participants Completed` = sum(`Visit Progress` >= 1, na.rm = TRUE),
+    
+    # Count how many participants are still in progress (Visit Progress greater than 1)
+    `Participants in Progress` = sum(`Visit Progress` < 1, na.rm = TRUE)
+  )
+```
+
+```{r display, include = TRUE}
+library(shiny)
+library(DT)
+library(dplyr)
+library(shinydashboard)
+library(tidyr)
+library(stringr)
+library(purrr)
+
+# LOGO URL
+logo_url <- "https://images.squarespace-cdn.com/content/5ae761c1f407b4f614a88924/1567611508414-HY5QT88X9JRXP64RVWPL/cpcr-logo.png?format=1000w&content-type=image%2Fpng"
+
+### UI LAYOUT: THE STRUCTURE OF THE APPLICATION UI (USER INTERFACE)
+ui <- fluidPage(
+  tags$head(tags$style(
+    HTML(
+      "
+      html, body, .container {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+
+      .dashboard-page-wrapper {
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+      }
+
+      .navbar-header {
+        display: none !important;
+      }
+
+      .logo-container {
+        text-align: center;
+        margin-top: 10px;
+      }
+
+      .container {
+        display: flex;
+        flex-direction: row;
+        height: 100%;
+        width: 100%;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+
+      .box {
+        padding: 15px;
+        border: 1px solid #000000;
+        background-color: #FFFDFA;
+        display: flex;
+        flex-direction: column;
+        overflow: auto;
+        height: 700px;
+        font-size: auto;
+      }
+
+      .left-panel {
+        width: 15%;
+        margin: 0% 1%;
+      }
+
+      .center-panel {
+        width: 66%;
+        padding: 0% 1%;
+      }
+
+      .right-panel {
+        width: 15%;
+        margin: 0% 1%;
+      }
+
+      .btn-custom {
+        color: #FFFFFF;
+        background-color: #6951a7;
+        border-radius: 50px;
+        padding: 3px 35px;
+      }
+
+      strong {
+        color: #715bac;
+        font-size: 14px;
+      }
+
+      .shiny-input-container > label {
+        color: #715bac;
+        font-weight: bold;
+        font-size: 14px;
+      }
+
+      .section-header {
+        font-size: 14px;
+        font-weight: bold;
+        margin-bottom: 5px;
+      }
+
+      table.dataTable thead {
+        background-color: #6951a7 !important;
+        color: white !important;
+      }
+
+      ::-webkit-scrollbar {
+        width: 10px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        }
+      ::-webkit-scrollbar-thumb {
+        background: #6951a7;
+        border-radius: 10px;
+      }
+    "
+    )
+  )),
+  
+  # Displays the logo at the top of the page
+  div(class = "logo-container", img(src = logo_url, height = "100px")),
+  
+  div(
+    class = "container",
+    # Main container that holds the UI elements
+    
+    # Left Panel: Guide Effort Filter Tool
+    div(
+      class = "left-panel",
+      div(class = "section-header", "Guide Effort Filter Tool"),
+      div(
+        class = "box",
+        # Drop down to filter by Guide
+        selectInput(
+          "Guide",
+          "Filter by Guide",
+          choices = c("SELECT GUIDE", "ALL GUIDES", as.character(unique(
+            guide_summary_part1$Guide
+          ))),
+          selected = "SELECT GUIDES"
+        ),
+        
+        # Date range filter for filtering records within a specific date range
+        dateRangeInput(
+          "date_range",
+          "Filter by Dates",
+          start = min(guide_effort_table$`Start Date (First Prep)`, na.rm = TRUE),
+          end = max(
+            guide_effort_table$`End Date (last integration before follow-up)`,
+            na.rm = TRUE
+          )
+        ),
+        
+        # Check box  to enable/disable date filtering
+        checkboxInput("use_date_filter", "Use Date Filter", value = TRUE),
+        
+        # Check box group fro filtering by study
+        checkboxGroupInput(
+          "study",
+          "Filter by Study",
+          choices = as.character(unique(guide_effort_table$Study)),
+          selected = as.character(0)
+        ),
+        
+        # Buttons for applying and resetting filters
+        # actionButton("apply_filter", "Apply", class = "btn-custom"),
+        actionButton("reset_filter", "Reset", class = "btn-custom")
+      )
+    ),
+    
+    # Center Panel: Guide Effort Table
+    div(
+      class = "center-panel",
+      div(class = "section-header", "Guide Effort Table"),
+      div(class = "box", DTOutput("filtered_table"))
+    ),
+    
+    # Right Panel: Guide Summary
+    div(
+      class = "right-panel",
+      div(class = "section-header", "Guide Summary"),
+      div(class = "box", htmlOutput("summary_text"))
+    )
+  )
+)
+
+### SERVER LOGIC: THE BEHAVIOR AND FUNCTIONALITY OF THE APP
+server <- function(input, output, session) {
+  # Create a reactive value to store the filtered data
+  filtered_data <- reactive({
+    if(is.null(input$study) || length(input$study) == 0) {
+      return(guide_effort_table[0, ]) # Return empty table with same columns
+    }
+    
+    guide_effort_table %>%
+      filter(
+        (
+          input$Guide == "SELECT GUIDE" |
+            map_lgl(str_split(`Clinical Guide`, "/"), ~ input$Guide %in% .x) |
+            map_lgl(str_split(`Secondary Guide`, "/"), ~ input$Guide %in% .x)
+        ),
+        (
+          input$use_date_filter == FALSE |
+            (`Start Date (First Prep)` >= input$date_range[1] & 
+               `Start Date (First Prep)` <= input$date_range[2]
+            )
+        ),
+        Study %in% input$study
+      )
+  })
+  
+  filtered_data_2 <- reactive({
+    if (is.null(input$study) || length(input$study) == 0) {
+      return(pre_guide_summary[0, ])
+    }
+    pre_guide_summary %>%
+      filter(
+        (
+          input$Guide == "SELECT GUIDE" |
+            map_lgl(str_split(`Clinical Guide`, "/"), ~ input$Guide %in% .x) |
+            map_lgl(str_split(`Secondary Guide`, "/"), ~ input$Guide %in% .x)
+        ),
+        (
+          input$use_date_filter == FALSE |
+            (
+              `Start Date (First Prep)` >= input$date_range[1] &
+                `Start Date (First Prep)` <= input$date_range[2]
+            )|
+             (`Date` >= input$date_range[1] &
+                `Date` <= input$date_range[2])
+           
+        ),
+        if (is.null(input$study) || length(input$study) == 0) FALSE else Study %in% input$study
+      )
+  })
+  
+  guide_summary_1 <- reactive({
+    if (is.null(input$study) || length(input$study) == 0) {
+      return(tibble(
+        Guide = NA_character_,
+        `Total Participants` = NA_integer_,
+        `Participants in Progress` = NA_integer_,
+        `Number of Sessions` = NA_integer_,
+        `Number of Prep Visits` = NA_integer_,
+        `Number of Follow-up Visits` = NA_integer_,
+        `Hours Total` = NA_real_
+      )[0, ]) # Empty tiblle with right structure
+    }
+    # Filtered data for generating the guide summary statistics
+    guide_summary <- pre_guide_summary %>%
+      filter(# Filter by Date range (checking either 'Start Date (First Prep)' or 'Date')
+        (input$use_date_filter == FALSE |
+           ((
+             `Start Date (First Prep)` >= input$date_range[1] &
+              `Start Date (First Prep)` <= input$date_range[2]
+           ) |
+             (`Date` >= input$date_range[1] &
+                `Date` <= input$date_range[2])
+           )), # Filter by Study
+        Study %in% input$study) %>%
+      # Pivot 'Clinical Guide' and 'Secondary Guide' into a long format
+      pivot_longer(
+        cols = c(`Clinical Guide`, `Secondary Guide`),
+        names_to = "Guide_Type",
+        values_to = "Guide"
+      ) %>%
+      # Split guide names into rows
+      separate_rows(Guide, sep = "/") %>%
+      # Standardizes the guide names
+      mutate(`Guide` = standardize_name(`Guide`)) %>%
+      # Remove rows where Guide is missing
+      filter(
+        !is.na(Guide),
+        !(tolower(`Guide`) == "test"),
+        !is.na(`Participant ID`),
+        `Participant ID` != ""
+      ) %>%
+      # Group by Guide
+      group_by(Guide) %>%
+      # Summarize key participant counts
+      summarise(
+        # Count the number of sessions per guide
+        `Number of Sessions` = sum(grepl("sess|session", `Visit Name`, ignore.case = TRUE) & !grepl("pre|post", `Visit Name`, ignore.case = TRUE), na.rm = TRUE),
+        # Count the number of prep visits for each guide (case-insensitive check)
+        `Number of Prep Visits` = sum(grepl("prep", `Visit Name`, ignore.case = TRUE), na.rm = TRUE),
+        # Count the number of follow-up visits for each guide // CODE DEPENDENT ON STUDIES
+        `Number of Follow-up Visits` = sum(
+          grepl("fu|month|post|int|week|wk|mo|ltfu", `Visit Name`, ignore.case = TRUE),
+          na.rm = TRUE
+        ),
+        # Calculate the total hours (convert to minutes to hours)
+        `Hours Total` = round(sum(as.numeric(
+          `Duration in Min`
+        ), na.rm = TRUE) / 60, 1),
+      )
+    
+    
+    
+    # Calculate guide status (total participants, completed, and in progress)
+    guide_status <- guide_effort_table %>%
+      filter(# Filter by Date range (checking either 'Start Date (First Prep)' or 'Date')
+        (input$use_date_filter == FALSE |
+           ((
+             `Start Date (First Prep)` >= input$date_range[1] &
+               `Start Date (First Prep)` <= input$date_range[2]
+           )
+           )), # Filter by Study
+        Study %in% input$study) %>%
+      # Convert 'Visit Progress' into a numeric fraction
+      mutate(`Visit Progress` = sapply(strsplit(`Visit Progress`, "/"), function(x)
+        as.numeric(x[1]) / as.numeric(x[2]))) %>%
+      # Pivot 'Clinical Guide' and 'Secondary Guide' into a long format
+      pivot_longer(
+        cols = c(`Clinical Guide`, `Secondary Guide`),
+        names_to = "Guide_Type",
+        values_to = "Guide"
+      ) %>%
+      # Split guide names into rows
+      separate_rows(Guide, sep = "/") %>%
+      # Standardizes the guide names
+      mutate(`Guide` = standardize_name(`Guide`)) %>%
+      # Remove rows where Guide is missing
+      filter(
+        !is.na(Guide),
+        !(tolower(`Guide`) == "test"),
+        !is.na(`Participant ID`),
+        `Participant ID` != ""
+      ) %>%
+      # Group by Guide
+      group_by(Guide) %>%
+      # Summarize key participant counts
+      summarise(
+        `Total Participants` = n_distinct(`Participant ID`, Study),
+        `Participants Completed` = sum(`Visit Progress` >= 1, na.rm = TRUE),
+        `Participants in Progress` = sum(`Visit Progress` < 1, na.rm = TRUE)
+      )
+    
+    # Combine for center thing
+    merge(guide_status,
+          guide_summary,
+          by = c("Guide"),
+          all = TRUE)
+  })
+  
+  
+  # Reset filters to their initial state when the 'Reset' button is clicked
+  observeEvent(input$reset_filter, {
+    updateSelectInput(session, "Guide", selected = "SELECT GUIDE")
+    updateDateRangeInput(
+      session,
+      "date_range",
+      start = min(guide_effort_table$`Start Date (First Prep)`, na.rm = TRUE),
+      end = max(
+        guide_effort_table$`End Date (last integration before follow-up)`,
+        na.rm = TRUE
+      )
+    )
+    updateCheckboxGroupInput(session, "study", selected = as.character(unique(guide_effort_table$Study)))
+  })
+  
+  # Render the filtered guide effort table using DataTables (with custom options)
+  output$filtered_table <- renderDT({
+    req(filtered_data(), guide_summary_1()) # Ensure the filtered data is available
+    if (input$Guide == "ALL GUIDES") {
+      datatable(
+        guide_summary_1(),
+        options = list(
+          scrollX = TRUE,
+          scrollY = "500px",
+          paging = FALSE,
+          # Removes pagination
+          searching = FALSE,
+          # Removes search bar
+          pageLength = 10    # Sets the number of rows per page
+        ),
+        rownames = FALSE
+      )
+    } else {
+      datatable(
+        filtered_data(),
+        options = list(
+          scrollX = TRUE,
+          scrollY = "500px",
+          paging = FALSE,
+          # Removes pagination
+          searching = FALSE,
+          # Removes search bar
+          pageLength = 10    # Sets the number of rows per page
+        ),
+        rownames = FALSE
+      )
+    }
+  })
+  
+  
+  # Generate and display summary statistics for the selected guide
+  output$summary_text <- renderUI({
+    req(guide_summary_1(),
+        input$Guide,
+        input$study,
+        input$date_range)
+    
+    if (input$Guide == "ALL GUIDES" ||
+        input$Guide == "SELECT GUIDE") {
+      return(
+        HTML(
+          "<p><strong>Guide Name:</strong> <br> NA<br>
+               <strong>Total Participants:</strong> <br> NA<br>
+               <strong>Participants In Progress:</strong> <br> NA<br>
+               <strong>Participants Completed:</strong> <br> NA<br>
+               <strong>Number of Sessions:</strong> <br> NA<br>
+               <strong>Number of Prep Visits:</strong> <br> NA<br>
+               <strong>Follow-Up Visits:</strong> <br> NA<br>
+               <strong>Hours Total:</strong> <br> NA</p>"
+        )
+      )
+    }
+    
+    if (is.null(input$Guide) || input$Guide == "" || nrow(guide_summary_1() %>% filter(`Guide` == input$Guide)) == 0) {
+      return(
+        HTML(
+          "<p><strong>Guide Name:</strong> <br> NA<br>
+               <strong>Total Participants:</strong> <br> NA<br>
+               <strong>Participants In Progress:</strong> <br> NA<br>
+               <strong>Participants Completed:</strong> <br> NA<br>
+               <strong>Number of Sessions:</strong> <br> NA<br>
+               <strong>Number of Prep Visits:</strong> <br> NA<br>
+               <strong>Follow-Up Visits:</strong> <br> NA<br>
+               <strong>Hours Total:</strong> <br> NA</p>"
+        )
+      )
+    }
+    
+    HTML(
+      paste0(
+        "<p><strong>Guide Name:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(Guide),
+        "<br>",
+        "<strong>Total Participants:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Total Participants`),
+        "<br>",
+        "<strong>Participants In Progress:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Participants in Progress`),
+        "<br>",
+        "<strong>Participants Completed:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Participants Completed`),
+        "<br>",
+        "<strong>Number of Sessions:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Number of Sessions`),
+        "<br>",
+        "<strong>Number of Prep Visits:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Number of Prep Visits`),
+        "<br>",
+        "<strong>Follow-Up Visits:</strong> <br>",
+        guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Number of Follow-up Visits`),
+        "<br>",
+        "<strong>Hours Total:</strong> <br>",
+        round(
+          guide_summary_1() %>% filter(`Guide` == input$Guide) %>% pull(`Hours Total`),
+          1
+        ),
+        "</p>"
+      )
+    )
+  })
+  
+  
+}
+
+### RUN THE SHINY APP WITH THE UI AND SERVER LOGIC
+shinyApp(ui, server)
+```
