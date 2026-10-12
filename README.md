@@ -1,5 +1,5 @@
 # Guide Effort Tool
-This folder contains the <b> Guide Effort Tool </b>, an interactive Shiny Flexdashboard application that imports, processess, and visualizes clinical guide participation data across multiple studies.
+This folder contains the <b> Guide Effort Tool</b>, an interactive Shiny Flexdashboard application that imports, processess, and visualizes clinical guide participation data across multiple studies.
 
 ## Overview
 This tool is built as a single R Markdown file that renders into a flexdashboard and uses <b> Shiny </b> runtime to create a responsive and dynamic interface.
